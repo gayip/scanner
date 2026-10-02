@@ -35,8 +35,9 @@
 </head>
 <body>
   <h1>📷 Сканер наклеек</h1>
-  <p>Наводите камеру на наклейки подряд — каждая засчитывается с вибрацией. Закончили — закройте сканер и нажмите «Отправить в бот».</p>
+  <p>Наводите камеру на наклейки подряд — каждая засчитывается звуком и вибрацией. Закончили — закройте сканер и нажмите «Отправить в бот».</p>
   <button id="scan" type="button">Сканировать</button>
+  <button id="snd" class="secondary" type="button">🔊 Звук: вкл</button>
   <button id="clear" class="secondary" type="button" hidden>Очистить список</button>
   <div id="count">0</div>
   <p id="hint">наклеек отсканировано</p>
@@ -44,10 +45,46 @@
   <ul id="list"></ul>
 
 <script>
-  const tg = window.Telegram && window.Telegram.WebApp;
+  // telegram-web-app.js создаёт WebApp и в обычном браузере — внутри Telegram есть initData
+  const tg = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData ? window.Telegram.WebApp : null;
   const MAX = 250;                       // sendData — до 4 КБ
   const codes = new Map();               // код для бота → подпись
   const $ = (id) => document.getElementById(id);
+
+  // Звук сканера: «пик» — считано, низкий двойной сигнал — чужой QR, тихий щелчок — уже было.
+  // Без файлов — тон генерируется тут же (Web Audio). Вкл/выкл — кнопка «🔊», выбор запоминается.
+  let soundOn = true;
+  try { soundOn = localStorage.getItem('scanSound') !== 'off'; } catch (e) { /* приватный режим */ }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  let ac = null;
+  function audio() {
+    if (!ac && AC) ac = new AC();
+    if (ac && ac.state === 'suspended') ac.resume();
+    return ac;
+  }
+  function beep(freq, ms, vol, type) {
+    const a = soundOn && audio();
+    if (!a) return;
+    const o = a.createOscillator();
+    const g = a.createGain();
+    const t = a.currentTime;
+    o.type = type || 'square';
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + ms / 1000);
+    o.connect(g);
+    g.connect(a.destination);
+    o.start(t);
+    o.stop(t + ms / 1000 + 0.02);
+  }
+  const sound = {
+    ok: () => beep(2700, 110, 0.25),                                   // как у сканера штрихкодов
+    bad: () => { beep(240, 120, 0.3, 'sawtooth'); setTimeout(() => beep(180, 170, 0.3, 'sawtooth'), 140); },
+    dup: () => beep(1300, 35, 0.12),
+  };
+  function sndLabel() { $('snd').textContent = soundOn ? '🔊 Звук: вкл' : '🔇 Звук: выкл'; }
+  // Браузер телефона включает звук только после касания страницы — «разблокируем» при первом же касании
+  ['touchstart', 'click'].forEach((ev) => document.addEventListener(ev, () => audio(), { once: true, passive: true }));
 
   // Что зашито в наклейку: t.me/<бот>?start=q_Q000123 (пустая) или ?start=inv_45 (позиция)
   function parse(text) {
@@ -77,20 +114,29 @@
   }
 
   function scan() {
-    if (!tg || !tg.showScanQrPopup) { $('warn').textContent = 'Откройте сканер из Telegram-бота (кнопка «📷 Сканер»).'; return; }
+    if (!tg) { $('warn').textContent = 'Откройте сканер из Telegram-бота (кнопка «📷 Сканер»).'; return; }
+    if (!tg.isVersionAtLeast('6.4')) { $('warn').textContent = 'Обновите Telegram — сканер QR работает в Telegram 6.4 и новее.'; return; }
     tg.showScanQrPopup({ text: 'Наводите на наклейки подряд · закрыть — ✕' }, (text) => {
       const c = parse(text);
-      if (!c) { tg.HapticFeedback.notificationOccurred('error'); return false; }
-      if (codes.has(c)) { tg.HapticFeedback.impactOccurred('light'); return false; }
-      if (codes.size >= MAX) { tg.HapticFeedback.notificationOccurred('warning'); $('warn').textContent = `Не больше ${MAX} за раз — отправьте и продолжите.`; return true; }
+      if (!c) { sound.bad(); tg.HapticFeedback.notificationOccurred('error'); return false; }
+      if (codes.has(c)) { sound.dup(); tg.HapticFeedback.impactOccurred('light'); return false; }
+      if (codes.size >= MAX) { sound.bad(); tg.HapticFeedback.notificationOccurred('warning'); $('warn').textContent = `Не больше ${MAX} за раз — отправьте и продолжите.`; return true; }
       codes.set(c, true);
+      sound.ok();
       tg.HapticFeedback.notificationOccurred('success');
       render();
       return false;                      // false — сканер остаётся открытым для следующей наклейки
     });
   }
 
-  $('scan').addEventListener('click', scan);
+  $('scan').addEventListener('click', () => { audio(); scan(); });
+  $('snd').addEventListener('click', () => {
+    soundOn = !soundOn;
+    try { localStorage.setItem('scanSound', soundOn ? 'on' : 'off'); } catch (e) { /* приватный режим */ }
+    sndLabel();
+    if (soundOn) sound.ok();   // сразу слышно, как звучит
+  });
+  sndLabel();
   $('clear').addEventListener('click', () => { codes.clear(); render(); });
   if (tg) {
     tg.ready();
