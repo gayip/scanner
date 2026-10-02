@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Сканер QR</title>
+<!--
+  Сканер QR-наклеек внутри Telegram (Mini App). Открывается кнопкой «📷 Сканер»
+  в боте. Ничего не читает с сайта и не хранит: сканирует наклейки подряд
+  встроенным сканером Telegram и отправляет список кодов боту (sendData).
+  Telegram открывает Mini App только по https — см. INV_SCAN_WEBAPP_URL в .env.
+-->
+<!-- Без integrity: Telegram обновляет этот файл без смены адреса, хэш сломал бы сканер.
+     Страница не видит данных сайта — только отправляет боту коды наклеек. -->
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root { --bg: var(--tg-theme-bg-color, #fff); --fg: var(--tg-theme-text-color, #111); --hint: var(--tg-theme-hint-color, #888);
+          --btn: var(--tg-theme-button-color, #2a78d6); --btn-fg: var(--tg-theme-button-text-color, #fff);
+          --sec: var(--tg-theme-secondary-bg-color, #f2f3f5); }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; font: 15px/1.45 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; background: var(--bg); color: var(--fg); }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p { margin: 0 0 14px; color: var(--hint); font-size: 13px; }
+  button { width: 100%; border: 0; border-radius: 10px; padding: 14px; font-size: 16px; font-weight: 600; cursor: pointer;
+           background: var(--btn); color: var(--btn-fg); }
+  button.secondary { background: var(--sec); color: var(--fg); font-weight: 500; margin-top: 8px; }
+  #count { font-size: 34px; font-weight: 700; margin: 18px 0 2px; }
+  ul { list-style: none; padding: 0; margin: 10px 0 0; max-height: 45vh; overflow: auto; }
+  li { padding: 7px 10px; border-radius: 8px; background: var(--sec); margin-bottom: 5px; font-family: ui-monospace, Consolas, monospace; font-size: 14px;
+       display: flex; justify-content: space-between; }
+  li span { color: var(--hint); font-family: inherit; }
+  #warn { color: #d33; font-size: 13px; }
+</style>
+</head>
+<body>
+  <h1>📷 Сканер наклеек</h1>
+  <p>Наводите камеру на наклейки подряд — каждая засчитывается с вибрацией. Закончили — закройте сканер и нажмите «Отправить в бот».</p>
+  <button id="scan" type="button">Сканировать</button>
+  <button id="clear" class="secondary" type="button" hidden>Очистить список</button>
+  <div id="count">0</div>
+  <p id="hint">наклеек отсканировано</p>
+  <p id="warn"></p>
+  <ul id="list"></ul>
+
+<script>
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const MAX = 250;                       // sendData — до 4 КБ
+  const codes = new Map();               // код для бота → подпись
+  const $ = (id) => document.getElementById(id);
+
+  // Что зашито в наклейку: t.me/<бот>?start=q_Q000123 (пустая) или ?start=inv_45 (позиция)
+  function parse(text) {
+    const t = String(text || '').trim();
+    let m = t.match(/[?&]start=(q_[A-Za-z0-9]+|inv_\d+)/);
+    if (m) return m[1];
+    m = t.match(/^(?:QR:)?\s*(Q\d{6})$/i);
+    return m ? 'q_' + m[1].toUpperCase() : null;
+  }
+  const label = (c) => (c.startsWith('q_') ? c.slice(2) : 'позиция #' + c.slice(4));
+
+  function render() {
+    $('count').textContent = codes.size;
+    $('list').innerHTML = '';
+    [...codes.keys()].reverse().forEach((c, i) => {
+      const li = document.createElement('li');
+      li.textContent = label(c);
+      const n = document.createElement('span');
+      n.textContent = codes.size - i;
+      li.appendChild(n);
+      $('list').appendChild(li);
+    });
+    $('clear').hidden = !codes.size;
+    if (!tg) return;
+    if (codes.size) tg.MainButton.setText(`Отправить в бот (${codes.size})`).show();
+    else tg.MainButton.hide();
+  }
+
+  function scan() {
+    if (!tg || !tg.showScanQrPopup) { $('warn').textContent = 'Откройте сканер из Telegram-бота (кнопка «📷 Сканер»).'; return; }
+    tg.showScanQrPopup({ text: 'Наводите на наклейки подряд · закрыть — ✕' }, (text) => {
+      const c = parse(text);
+      if (!c) { tg.HapticFeedback.notificationOccurred('error'); return false; }
+      if (codes.has(c)) { tg.HapticFeedback.impactOccurred('light'); return false; }
+      if (codes.size >= MAX) { tg.HapticFeedback.notificationOccurred('warning'); $('warn').textContent = `Не больше ${MAX} за раз — отправьте и продолжите.`; return true; }
+      codes.set(c, true);
+      tg.HapticFeedback.notificationOccurred('success');
+      render();
+      return false;                      // false — сканер остаётся открытым для следующей наклейки
+    });
+  }
+
+  $('scan').addEventListener('click', scan);
+  $('clear').addEventListener('click', () => { codes.clear(); render(); });
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    tg.onEvent('scanQrPopupClosed', render);
+    tg.MainButton.onClick(() => tg.sendData(JSON.stringify({ codes: [...codes.keys()] })));
+    scan();                              // сразу открыть сканер — на одно нажатие меньше
+  } else {
+    $('warn').textContent = 'Эта страница работает только внутри Telegram.';
+  }
+</script>
+</body>
+</html>
