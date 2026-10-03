@@ -45,8 +45,9 @@
   <ul id="list"></ul>
 
 <script>
-  // telegram-web-app.js создаёт WebApp и в обычном браузере — внутри Telegram есть initData
-  const tg = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData ? window.Telegram.WebApp : null;
+  // telegram-web-app.js создаёт WebApp и в обычном браузере (platform = 'unknown'). По initData проверять нельзя:
+  // сканер открывается кнопкой клавиатуры бота, а таким Mini App Telegram initData не передаёт — пусто
+  const tg = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.platform !== 'unknown' ? window.Telegram.WebApp : null;
   const MAX = 250;                       // sendData — до 4 КБ
   const codes = new Map();               // код для бота → подпись
   const $ = (id) => document.getElementById(id);
